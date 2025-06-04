@@ -42,6 +42,7 @@ dependencies=[
           'wildlife-datasets>=0.3.4',
           'kornia>=0.6.12',
           'gluefactory @ git+https://github.com/cvg/glue-factory.git@1f56839db2242929960d70f85bfac6c19ef2821c',
+          "ipykernel>=6.29.5",
 ]
 
 [project.urls]
