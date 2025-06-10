@@ -44,6 +44,7 @@ dependencies=[
           'gluefactory @ git+https://github.com/cvg/glue-factory.git@1f56839db2242929960d70f85bfac6c19ef2821c',
           "ipykernel>=6.29.5",
           "pynvml>=11.5.3",
+          "wandb>=0.20.1",
 ]
 
 [project.urls]
