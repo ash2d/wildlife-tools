@@ -72,3 +72,38 @@ class SoftmaxLoss(nn.Module):
 
     def forward(self, x, y):
         return self.criterion(self.linear(x), y)
+
+
+class InfoNCELoss(nn.Module):
+    """InfoNCE loss for contrastive learning.
+
+    This implementation follows the supervised contrastive formulation where
+    samples with the same label are treated as positives and the remaining
+    samples in the batch are negatives.
+
+    Args:
+        temperature (float): Temperature scaling for similarities.
+    """
+
+    def __init__(self, temperature: float = 0.1):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(self, embeddings, y):
+        device = embeddings.device
+
+        embeddings = nn.functional.normalize(embeddings, dim=1)
+        similarity_matrix = torch.div(
+            embeddings @ embeddings.t(), self.temperature
+        )
+
+        labels = y.contiguous().view(-1, 1)
+        mask = torch.eq(labels, labels.T).float().to(device)
+
+        logits_mask = 1.0 - torch.eye(labels.shape[0], device=device)
+        exp_sim = torch.exp(similarity_matrix) * logits_mask
+        log_prob = similarity_matrix - torch.log(exp_sim.sum(dim=1, keepdim=True) + 1e-8)
+
+        mean_log_prob_pos = (mask * log_prob).sum(dim=1) / mask.sum(dim=1)
+        loss = -mean_log_prob_pos.mean()
+        return loss
