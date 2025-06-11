@@ -1,10 +1,8 @@
 """Self-supervised training script for DINOv2 using a simple student–teacher setup.
 
-The script mirrors ``exploring/train_dinov2_infonce_wandb.py`` but trains in a
-self-supervised manner.  Two random crops of each image are generated and the
-student is trained to match the teacher outputs using the DINO loss.  Metrics
-are logged to ``wandb`` and a local loss file, and the teacher model is saved at
-the end of every epoch.
+Two random crops of each image are generated and the student is trained to match the 
+teacher outputs using the DINO loss.  Metrics are logged to ``wandb`` and a local loss
+file, and the teacher model is saved at the end of every epoch.
 """
 
 import itertools
@@ -202,6 +200,9 @@ def main(
         epoch_loss = sum(losses) / len(losses)
         print(f"Epoch {epoch}: loss={epoch_loss:.4f}")
         wandb.log({"loss": epoch_loss, "epoch": epoch})
+        # Create log file if it doesn't exist
+        if not os.path.exists(os.path.dirname(log_file)):
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
         with open(log_file, "a") as f:
             f.write(f"{epoch},{epoch_loss:.6f}\n")
         torch.save(
