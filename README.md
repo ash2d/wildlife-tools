@@ -48,6 +48,7 @@ Here’s a summary of recent updates and changes.
     - Matching method: LightGlue, More efficient LoFTR
 - **New Feature:** Introduced WildFusion (https://arxiv.org/abs/2408.12934), calibrated score fusion for high-accuracy animal reidentification. Added calibration methods.
 - **Bug Fixes:** Resolved issues with knn and ranking inference methods and many more.
+- **Improved Robustness:** `ImageDataset` now checks for missing or corrupt files and raises informative errors.
 
 
 ## Installation
