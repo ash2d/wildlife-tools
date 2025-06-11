@@ -111,6 +111,18 @@ def main(
     processor = AutoImageProcessor.from_pretrained("facebook/dinov2-small", use_fast=True)
     backbone = AutoModel.from_pretrained("facebook/dinov2-small")
 
+    # freeze all parameters in the backbone
+    for param in backbone.parameters():
+        param.requires_grad = False
+
+    # The DINOv2 model from Hugging Face has an encoder with a list of layers.
+    # unfreeze the last two layers. DINOv2-small has 12 layers (0-11).
+    layers_to_train = [10, 11]
+    for name, param in backbone.named_parameters():
+        for layer_num in layers_to_train:
+            if f"encoder.layer.{layer_num}." in name:
+                param.requires_grad = True
+                
     transform = T.Compose(
         [
             T.Resize((224, 224)),
@@ -123,9 +135,18 @@ def main(
     wandb.init(project=project)
 
     objective = InfoNCELoss(temperature=0.1)
+    params_to_train = []
+    for name, param in backbone.named_parameters():
+        if param.requires_grad:
+            params_to_train.append(param)
+            # print(f"Training parameter: {name}")
 
-    params = itertools.chain(backbone.parameters())
-    optimizer = SGD(params=params, lr=0.001, momentum=0.9)
+    # If objective has learnable parameters (like ArcFaceLoss), add them
+    if hasattr(objective, 'parameters'):
+        params_to_train.extend(objective.parameters())
+
+    # params = itertools.chain(backbone.parameters())
+    optimizer = SGD(params=params_to_train, lr=0.001, momentum=0.9)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
