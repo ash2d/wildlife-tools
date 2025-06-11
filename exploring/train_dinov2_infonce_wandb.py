@@ -14,6 +14,8 @@ Possible improvements:
 """
 
 import itertools
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -21,12 +23,44 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as T
+import wandb
 from torch.optim import SGD
 from transformers import AutoImageProcessor, AutoModel
-import wandb
 
-from wildlife_tools.train import BasicTrainer, InfoNCELoss, set_seed
 from wildlife_tools.data import ImageDataset
+from wildlife_tools.train import BasicTrainer, InfoNCELoss, set_seed
+
+
+class SafeImageDataset(ImageDataset):
+    """ImageDataset that skips unreadable images and logs their paths."""
+
+    def __init__(self, *args, log_file: str | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.log_file = log_file
+
+    def __getitem__(self, idx):
+        attempts = 0
+        start_idx = idx
+        while attempts < len(self.metadata):
+            data = self.metadata.iloc[idx]
+            img_path = os.path.join(self.root, data[self.col_path]) if self.root else data[self.col_path]
+            try:
+                img = self.get_image(img_path)
+            except (FileNotFoundError, ValueError):
+                if self.log_file:
+                    with open(self.log_file, "a") as f:
+                        f.write(f"{img_path}\n")
+                idx = (idx + 1) % len(self.metadata)
+                attempts += 1
+                continue
+
+            if self.transform:
+                img = self.transform(img)
+            if self.load_label:
+                return img, self.labels[idx]
+            return img
+
+        raise RuntimeError("No valid images found starting from index " f"{start_idx}")
 
 
 class DINOv2Wrapper(nn.Module):
@@ -39,6 +73,7 @@ class DINOv2Wrapper(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         outputs = self.backbone(x)
         return outputs.last_hidden_state[:, 0]
+
 
 def _attention_overlays(model, images, processor):
     """Create attention map overlays for a batch of images."""
@@ -62,25 +97,29 @@ def _attention_overlays(model, images, processor):
         overlays.append(overlay)
     return overlays
 
+
 def main(
     csv_path: str,
     root_dir: str,
     epochs: int = 3,
     batch_size: int = 16,
     project: str = "dinov2-infonce",
+    log_bad_images: str | None = None,
 ):
     df = pd.read_csv(csv_path)
 
     processor = AutoImageProcessor.from_pretrained("facebook/dinov2-small", use_fast=True)
     backbone = AutoModel.from_pretrained("facebook/dinov2-small")
 
-    transform = T.Compose([
-        T.Resize((224, 224)),
-        T.ToTensor(),
-        T.Normalize(mean=processor.image_mean, std=processor.image_std),
-    ])
+    transform = T.Compose(
+        [
+            T.Resize((224, 224)),
+            T.ToTensor(),
+            T.Normalize(mean=processor.image_mean, std=processor.image_std),
+        ]
+    )
 
-    dataset = ImageDataset(df, root=root_dir, transform=transform)
+    dataset = SafeImageDataset(df, root=root_dir, transform=transform, log_file=log_bad_images)
     wandb.init(project=project)
 
     objective = InfoNCELoss(temperature=0.1)
@@ -120,7 +159,6 @@ def main(
     wandb.finish()
 
 
-
 if __name__ == "__main__":
     import argparse
 
@@ -130,6 +168,12 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     parser.add_argument("--project", type=str, default="dinov2-infonce", help="wandb project name")
+    parser.add_argument(
+        "--log-bad-images",
+        type=str,
+        default=None,
+        help="File to log paths of unreadable images",
+    )
     args = parser.parse_args()
 
     main(
@@ -138,4 +182,5 @@ if __name__ == "__main__":
         epochs=args.epochs,
         batch_size=args.batch_size,
         project=args.project,
+        log_bad_images=args.log_bad_images,
     )
