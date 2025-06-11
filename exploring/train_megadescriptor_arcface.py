@@ -11,6 +11,7 @@ import torch
 import timm
 import torchvision.transforms as T
 from torch.optim import SGD
+import wandb
 
 from wildlife_tools.train import ArcFaceLoss, BasicTrainer, set_seed
 from wildlife_tools.data import ImageDataset
@@ -46,6 +47,8 @@ def main(
 
     dataset = ImageDataset(df, root=root_dir, transform=transform)
 
+    wandb.init(project='MGD-ArcFace')
+
     backbone = timm.create_model(model_name, num_classes=0, pretrained=True)
     embedding_size = _get_embedding_size(backbone)
 
@@ -62,6 +65,11 @@ def main(
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     set_seed(0)
+
+    def epoch_callback(trainer, epoch_data):
+        wandb.log({"train_loss": epoch_data["train_loss_epoch_avg"], "epoch": trainer.epoch})
+        trainer.save(f"/gws/nopw/j04/iecdt/dash/embeddings/models/MGD/model_epoch_{trainer.epoch}.pt")
+
     trainer = BasicTrainer(
         dataset=dataset,
         model=backbone,
@@ -70,6 +78,7 @@ def main(
         epochs=epochs,
         device=device,
         batch_size=batch_size,
+        epoch_callback=epoch_callback,
     )
     trainer.train()
 
@@ -78,10 +87,10 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Train MegaDescriptor with ArcFace loss")
-    parser.add_argument("csv", help="CSV file with columns 'path' and 'identity'")
-    parser.add_argument("root", help="Root directory for images")
+    parser.add_argument("--csv", help="CSV file with columns 'path' and 'identity'")
+    parser.add_argument("--root", help="Root directory for images")
     parser.add_argument("--model-name", type=str, default="hf-hub:BVRA/MegaDescriptor-T-224", help="timm model name")
-    parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
+    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     args = parser.parse_args()
 
