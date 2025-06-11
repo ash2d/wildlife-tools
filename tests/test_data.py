@@ -1,7 +1,8 @@
 
 import os
 import pytest
-from wildlife_tools.data import WildlifeDataset, FeatureDataset
+import pandas as pd
+from wildlife_tools.data import WildlifeDataset, FeatureDataset, ImageDataset
 from PIL.Image import Image
 
 load_options = ['full', 'full_mask', 'full_hide', 'bbox', 'bbox_mask', 'bbox_hide', 'crop_black']
@@ -38,3 +39,19 @@ def test_sift_feature_dataset_save_load(dataset, features_sift):
     assert a.metadata.equals(b.metadata)
     assert len(a.features) == len(b.features)
     os.remove('test.pkl')
+
+
+def test_image_dataset_missing_file(tmp_path):
+    df = pd.DataFrame({'path': ['missing.jpg'], 'identity': ['a']})
+    dataset = ImageDataset(df, root=tmp_path)
+    with pytest.raises(FileNotFoundError):
+        dataset[0]
+
+
+def test_image_dataset_corrupt_file(tmp_path):
+    df = pd.DataFrame({'path': ['bad.jpg'], 'identity': ['a']})
+    bad_file = tmp_path / 'bad.jpg'
+    bad_file.touch()  # create empty file
+    dataset = ImageDataset(df, root=tmp_path)
+    with pytest.raises(ValueError):
+        dataset[0]

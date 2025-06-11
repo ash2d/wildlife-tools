@@ -58,10 +58,39 @@ class ImageDataset:
         return len(self.metadata)
 
     def get_image(self, path):
+        """Load an image from the filesystem.
+
+        Parameters
+        ----------
+        path : str
+            Path to image file.
+
+        Returns
+        -------
+        PIL.Image.Image
+            Loaded image converted to RGB.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the file does not exists.
+        ValueError
+            If the image cannot be read or is empty/corrupt.
+        """
+
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Image file not found: {path}")
+
         img = cv2.imread(path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(img)
-        return img
+        if img is None or img.size == 0:
+            raise ValueError(f"Unable to load image or image is empty: {path}")
+
+        try:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        except cv2.error as e:
+            raise ValueError(f"Failed to convert image '{path}' to RGB") from e
+
+        return Image.fromarray(img)
 
     def __getitem__(self, idx):
         data = self.metadata.iloc[idx]
