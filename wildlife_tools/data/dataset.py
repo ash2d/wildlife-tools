@@ -8,8 +8,7 @@ import numpy as np
 import pandas as pd
 import pycocotools.mask as mask_coco
 from PIL import Image
-
-
+    
 class ImageDataset:
     """
     PyTorch-style dataset for a image datasets
@@ -108,6 +107,36 @@ class ImageDataset:
         else:
             return img
 
+class SafeImageDataset(ImageDataset):
+    """ImageDataset that skips unreadable images and logs their paths."""
+
+    def __init__(self, *args, log_file: str | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.log_file = log_file
+
+    def __getitem__(self, idx):
+        attempts = 0
+        start_idx = idx
+        while attempts < len(self.metadata):
+            data = self.metadata.iloc[idx]
+            img_path = os.path.join(self.root, data[self.col_path]) if self.root else data[self.col_path]
+            try:
+                img = self.get_image(img_path)
+            except (FileNotFoundError, ValueError):
+                if self.log_file:
+                    with open(self.log_file, "a") as f:
+                        f.write(f"{img_path}\n")
+                idx = (idx + 1) % len(self.metadata)
+                attempts += 1
+                continue
+
+            if self.transform:
+                img = self.transform(img)
+            if self.load_label:
+                return img, self.labels[idx]
+            return img
+
+        raise RuntimeError("No valid images found starting from index " f"{start_idx}")
 
 class WildlifeDataset(ImageDataset):
     """

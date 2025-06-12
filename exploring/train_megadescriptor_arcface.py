@@ -14,7 +14,7 @@ from torch.optim import SGD
 import wandb
 
 from wildlife_tools.train import ArcFaceLoss, BasicTrainer, set_seed
-from wildlife_tools.data import ImageDataset
+from wildlife_tools.data import ImageDataset, SafeImageDataset
 
 
 def _get_embedding_size(model: torch.nn.Module) -> int:
@@ -44,9 +44,8 @@ def main(
             T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ]
     )
-
-    dataset = ImageDataset(df, root=root_dir, transform=transform)
-
+    log_bad_images = '/home/users/dash/guppies/embeddings/wildlife-tools/exploring/unreadable_images.txt'
+    dataset = SafeImageDataset(df, root=root_dir, transform=transform, log_file=log_bad_images)
     wandb.init(project='MGD-ArcFace')
 
     backbone = timm.create_model(model_name, num_classes=0, pretrained=True)
