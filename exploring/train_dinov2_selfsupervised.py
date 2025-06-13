@@ -16,7 +16,7 @@ import torch.nn.functional as F
 import torchvision.transforms as T
 import wandb
 from torch.optim import SGD
-from transformers import AutoImageProcessor, AutoModel
+from transformers import AutoImageProcessor, AutoModel, AutoConfig
 
 from wildlife_tools.data import ImageDataset
 from wildlife_tools.train import set_seed
@@ -102,6 +102,11 @@ def update_ema(student: nn.Module, teacher: nn.Module, momentum: float) -> None:
         for ps, pt in zip(student.parameters(), teacher.parameters()):
             pt.data.mul_(momentum).add_(ps.data, alpha=1 - momentum)
 
+def get_cosine_lr_schedule(initial_lr, final_lr, current_step, total_steps):
+    """Calculate learning rate based on cosine decay schedule."""
+    progress = current_step / total_steps
+    cosine_decay = 0.5 * (1 + torch.cos(torch.tensor(progress * torch.pi)))
+    return final_lr + (initial_lr - final_lr) * cosine_decay
 
 def main(
     csv_path: str,
@@ -112,12 +117,19 @@ def main(
     project: str = "dinov2-selfsup",
     output_dir: str | None = None,
     log_file: str | None = None,
+    initial_lr: float = 0.00001,
+    final_lr: float = 0.000001,
 ) -> None:
     df = pd.read_csv(csv_path)
 
     processor = AutoImageProcessor.from_pretrained("facebook/dinov2-small", use_fast=True)
-    student_backbone = AutoModel.from_pretrained("facebook/dinov2-small")
-    teacher_backbone = AutoModel.from_pretrained("facebook/dinov2-small")
+    # student_backbone = AutoModel.from_pretrained("facebook/dinov2-small")
+    # teacher_backbone = AutoModel.from_pretrained("facebook/dinov2-small")
+    
+    # Initialize student and teacher backbones with random weights
+    config = AutoConfig.from_pretrained("facebook/dinov2-small")
+    student_backbone = AutoModel.from_config(config)
+    teacher_backbone = AutoModel.from_config(config)
 
     for p in teacher_backbone.parameters():
         p.requires_grad = False
@@ -136,7 +148,7 @@ def main(
     criterion = DINOLoss(out_dim)
 
     params: Iterable[torch.nn.Parameter] = itertools.chain(student.parameters())
-    optimizer = SGD(params=params, lr=0.001, momentum=0.9)
+    optimizer = SGD(params=params, lr=initial_lr, momentum=0.9)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     student.to(device)
@@ -178,11 +190,26 @@ def main(
     os.makedirs(run_dir, exist_ok=True)
     log_file = log_file or os.path.join(run_dir, "loss.log")
 
+    # Calculate total steps for the cosine schedule
+    total_steps = epochs * len(loader)
+    current_step = 0
+
     set_seed(0)
     for epoch in range(epochs):
         student.train()
         losses = []
         for img_s, img_t in loader:
+            # Update learning rate according to schedule
+            current_step += 1
+            current_lr = get_cosine_lr_schedule(
+                initial_lr, 
+                final_lr,
+                current_step,
+                total_steps
+            )
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = current_lr
+            
             img_s = img_s.to(device)
             img_t = img_t.to(device)
 
@@ -198,8 +225,8 @@ def main(
 
             losses.append(loss.item())
         epoch_loss = sum(losses) / len(losses)
-        print(f"Epoch {epoch}: loss={epoch_loss:.4f}")
-        wandb.log({"loss": epoch_loss, "epoch": epoch})
+        print(f"Epoch {epoch}: loss={epoch_loss:.4f}, lr={current_lr:.6f}")
+        wandb.log({"loss": epoch_loss, "epoch": epoch, "learning_rate": current_lr})
         # Create log file if it doesn't exist
         if not os.path.exists(os.path.dirname(log_file)):
             os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -222,9 +249,11 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--ema", type=float, default=0.996, help="Teacher EMA momentum")
-    parser.add_argument("--project", type=str, default="dinov2-selfsup", help="wandb project name")
+    parser.add_argument("--project", type=str, default="dinov2-selfsup-100000", help="wandb project name")
     parser.add_argument("--output-dir", type=str, default="runs", help="Directory to save models and logs")
     parser.add_argument("--log-file", type=str, default=None, help="File to log epoch losses")
+    parser.add_argument("--initial-lr", type=float, default=0.00001, help="Initial learning rate")
+    parser.add_argument("--final-lr", type=float, default=0.000001, help="Final learning rate")
     args = parser.parse_args()
 
     main(
@@ -236,4 +265,6 @@ if __name__ == "__main__":
         project=args.project,
         output_dir=args.output_dir,
         log_file=args.log_file,
+        initial_lr=args.initial_lr,
+        final_lr=args.final_lr,
     )
