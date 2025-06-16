@@ -23,4 +23,4 @@ source /home/users/dash/guppies/embeddings/wildlife-tools/.venv/bin/activate
 cd exploring
 
 # Run your Python script with desired arguments
-srun  uv run train_megadescriptor_arcface.py --csv '/home/users/dash/guppies/embeddings/wildlife-tools/exploring/csvs/top_10000_individuals.csv' --root '/gws/nopw/j04/iecdt/dash/cropped_images/id/w_random_masks' --epochs 10 
+srun  uv run train_megadescriptor_arcface.py --csv '/home/users/dash/guppies/embeddings/wildlife-tools/exploring/csvs/top_30000_individuals_database.csv' --root '/gws/nopw/j04/iecdt/dash/cropped_images/id/w_random_masks' --epochs 10
