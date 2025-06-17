@@ -10,6 +10,7 @@ import timm
 from wildlife_tools.data import SafeImageDataset
 from wildlife_tools.features import DeepFeatures
 from wildlife_tools.similarity import CosineSimilarity
+import os
 
 
 def load_model(model_name: str):
@@ -17,6 +18,9 @@ def load_model(model_name: str):
     if "dinov2" in model_name.lower():
         processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
         backbone = AutoModel.from_pretrained(model_name)
+        checkpoint = torch.load(args.save_path, map_location=device)
+        new_checkpoint = {k.replace("backbone.", ""): v for k, v in checkpoint.items()}
+        backbone.load_state_dict(new_checkpoint, strict=False)  # strict=False ignores unexpected keys
 
         class DINOv2Wrapper(nn.Module):
             def __init__(self, backbone):
@@ -37,11 +41,13 @@ def load_model(model_name: str):
         return DINOv2Wrapper(backbone), transform
     else:
         backbone = timm.create_model(model_name, pretrained=True, num_classes=0)
+        checkpoint = torch.load(args.save_path, weights_only=False)
+        backbone.load_state_dict(checkpoint['model'])
         transform = T.Compose(
             [
                 T.Resize((224, 224)),
                 T.ToTensor(),
-                T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                T.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
             ]
         )
         return backbone, transform
@@ -113,7 +119,13 @@ def main(args: argparse.Namespace) -> None:
     metrics_cos = evaluate(sim_cos, query_ds.labels_string, db_ds.labels_string, max_rank=5, distance=False)
     metrics_euc = evaluate(dist_euc, query_ds.labels_string, db_ds.labels_string, max_rank=5, distance=True)
 
-    with open(args.output, "w") as f:
+    # Use the directory of save_path for output if save_path is provided
+    output_path = args.output
+    if args.save_path:
+        output_dir = os.path.dirname(args.save_path)
+        output_path = os.path.join(output_dir, args.output)
+
+    with open(output_path, "w") as f:
         f.write(f"model: {args.model}\n")
         f.write(f"database_csv: {args.database}\n")
         f.write(f"query_csv: {args.query}\n\n")
@@ -133,9 +145,10 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate re-id embeddings")
-    parser.add_argument("model", help="Model name or path")
-    parser.add_argument("database", help="CSV with database images")
-    parser.add_argument("query", help="CSV with query images")
+    parser.add_argument("--model", default="hf-hub:BVRA/MegaDescriptor-T-224", help="Model name, e.g. hf-hub:BVRA/MegaDescriptor-T-224 or facebook/dinov2-small")
+    parser.add_argument("--save-path", help="Path to the model checkpoint if needed")
+    parser.add_argument("--database", help="CSV with database images")
+    parser.add_argument("--query", help="CSV with query images")
     parser.add_argument("--root", required=True, help="Root directory for image paths")
     parser.add_argument("--output", default="results.txt", help="Where to store the metrics")
     parser.add_argument("--log-file", default="unreadable_images.txt", help="File to log unreadable image paths")
