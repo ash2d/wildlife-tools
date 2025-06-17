@@ -6,6 +6,7 @@ backbone using the ``ArcFaceLoss`` objective.  It mirrors the workflow of the
 """
 
 import itertools
+import os
 import pandas as pd
 import torch
 import timm
@@ -15,6 +16,17 @@ import wandb
 
 from wildlife_tools.train import ArcFaceLoss, BasicTrainer, set_seed
 from wildlife_tools.data import ImageDataset, SafeImageDataset
+
+
+def _parse_model_size(model_name: str) -> str:
+    part = model_name.split("MegaDescriptor-")[-1].split("-")[0]
+    mapping = {"T": "tiny", "S": "small", "B": "base", "L": "large"}
+    return mapping.get(part.upper(), part.lower())
+
+
+def _run_name(model_name: str, num_images: int, training_type: str) -> str:
+    size = _parse_model_size(model_name)
+    return f"mgd-{size}_{training_type}_{num_images}"
 
 
 def _get_embedding_size(model: torch.nn.Module) -> int:
@@ -34,8 +46,10 @@ def main(
     model_name: str = "hf-hub:BVRA/MegaDescriptor-T-224",
     epochs: int = 3,
     batch_size: int = 16,
+    output_dir: str = "/gws/nopw/j04/iecdt/dash/embeddings/models",
 ):
     df = pd.read_csv(csv_path)
+    run_name = _run_name(model_name, len(df), "arcface")
 
     transform = T.Compose(
         [
@@ -44,9 +58,11 @@ def main(
             T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ]
     )
-    log_bad_images = '/home/users/dash/guppies/embeddings/wildlife-tools/exploring/unreadable_images.txt'
+    log_bad_images = "/home/users/dash/guppies/embeddings/wildlife-tools/exploring/unreadable_images.txt"
     dataset = SafeImageDataset(df, root=root_dir, transform=transform, log_file=log_bad_images)
-    wandb.init(project='MGD-ArcFace')
+    run_dir = os.path.join(output_dir, run_name)
+    os.makedirs(run_dir, exist_ok=True)
+    wandb.init(project="MGD-ArcFace", name=run_name)
 
     backbone = timm.create_model(model_name, num_classes=0, pretrained=True)
     embedding_size = _get_embedding_size(backbone)
@@ -67,7 +83,7 @@ def main(
 
     def epoch_callback(trainer, epoch_data):
         wandb.log({"train_loss": epoch_data["train_loss_epoch_avg"], "epoch": trainer.epoch})
-        trainer.save(f"/gws/nopw/j04/iecdt/dash/embeddings/models/MGD/model_epoch_{trainer.epoch}.pt")
+        trainer.save(os.path.join(run_dir, f"model_epoch_{trainer.epoch}.pt"))
 
     trainer = BasicTrainer(
         dataset=dataset,
@@ -91,6 +107,12 @@ if __name__ == "__main__":
     parser.add_argument("--model-name", type=str, default="hf-hub:BVRA/MegaDescriptor-T-224", help="timm model name")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="/gws/nopw/j04/iecdt/dash/embeddings/models",
+        help="Where to save model checkpoints",
+    )
     args = parser.parse_args()
 
     main(
@@ -99,4 +121,5 @@ if __name__ == "__main__":
         model_name=args.model_name,
         epochs=args.epochs,
         batch_size=args.batch_size,
+        output_dir=args.output_dir,
     )

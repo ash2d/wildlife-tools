@@ -98,6 +98,16 @@ def _attention_overlays(model, images, processor):
     return overlays
 
 
+def _parse_model_size(model_name: str) -> str:
+    """Return the DINOv2 model size from its name."""
+    return model_name.split("-")[-1]
+
+
+def _run_name(model_name: str, num_images: int, training_type: str) -> str:
+    size = _parse_model_size(model_name)
+    return f"dino-{size}_{training_type}_{num_images}"
+
+
 def main(
     csv_path: str,
     root_dir: str,
@@ -105,11 +115,14 @@ def main(
     batch_size: int = 16,
     project: str = "dinov2-infonce",
     log_bad_images: str | None = None,
+    model_name: str = "facebook/dinov2-small",
+    output_dir: str = "/gws/nopw/j04/iecdt/dash/embeddings/models",
 ):
     df = pd.read_csv(csv_path)
+    run_name = _run_name(model_name, len(df), "infonce")
 
-    processor = AutoImageProcessor.from_pretrained("facebook/dinov2-small", use_fast=True)
-    backbone = AutoModel.from_pretrained("facebook/dinov2-small")
+    processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
+    backbone = AutoModel.from_pretrained(model_name)
 
     # freeze all parameters in the backbone
     for param in backbone.parameters():
@@ -122,7 +135,7 @@ def main(
         for layer_num in layers_to_train:
             if f"encoder.layer.{layer_num}." in name:
                 param.requires_grad = True
-                
+
     transform = T.Compose(
         [
             T.Resize((224, 224)),
@@ -132,7 +145,9 @@ def main(
     )
 
     dataset = SafeImageDataset(df, root=root_dir, transform=transform, log_file=log_bad_images)
-    wandb.init(project=project)
+    run_dir = os.path.join(output_dir, run_name)
+    os.makedirs(run_dir, exist_ok=True)
+    wandb.init(project=project, name=run_name)
 
     objective = InfoNCELoss(temperature=0.1)
     params_to_train = []
@@ -142,7 +157,7 @@ def main(
             # print(f"Training parameter: {name}")
 
     # If objective has learnable parameters (like ArcFaceLoss), add them
-    if hasattr(objective, 'parameters'):
+    if hasattr(objective, "parameters"):
         params_to_train.extend(objective.parameters())
 
     # params = itertools.chain(backbone.parameters())
@@ -164,7 +179,7 @@ def main(
                     "epoch": trainer.epoch,
                 }
             )
-        trainer.save(f"/gws/nopw/j04/iecdt/dash/embeddings/models/dino/model_epoch_{trainer.epoch}.pt")
+        trainer.save(os.path.join(run_dir, f"model_epoch_{trainer.epoch}.pt"))
 
     trainer = BasicTrainer(
         dataset=dataset,
@@ -195,6 +210,18 @@ if __name__ == "__main__":
         default=None,
         help="File to log paths of unreadable images",
     )
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default="facebook/dinov2-small",
+        help="DINOv2 model name",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="/gws/nopw/j04/iecdt/dash/embeddings/models",
+        help="Directory to save model checkpoints",
+    )
     args = parser.parse_args()
 
     main(
@@ -204,4 +231,6 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         project=args.project,
         log_bad_images=args.log_bad_images,
+        model_name=args.model_name,
+        output_dir=args.output_dir,
     )

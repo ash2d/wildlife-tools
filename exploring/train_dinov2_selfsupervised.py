@@ -1,6 +1,6 @@
 """Self-supervised training script for DINOv2 using a simple student–teacher setup.
 
-Two random crops of each image are generated and the student is trained to match the 
+Two random crops of each image are generated and the student is trained to match the
 teacher outputs using the DINO loss.  Metrics are logged to ``wandb`` and a local loss
 file, and the teacher model is saved at the end of every epoch.
 """
@@ -20,6 +20,15 @@ from transformers import AutoImageProcessor, AutoModel, AutoConfig
 
 from wildlife_tools.data import ImageDataset
 from wildlife_tools.train import set_seed
+
+
+def _parse_model_size(model_name: str) -> str:
+    return model_name.split("-")[-1]
+
+
+def _run_name(model_name: str, num_images: int, training_type: str) -> str:
+    size = _parse_model_size(model_name)
+    return f"dino-{size}_{training_type}_{num_images}"
 
 
 class SelfSupervisedDataset(ImageDataset):
@@ -102,11 +111,13 @@ def update_ema(student: nn.Module, teacher: nn.Module, momentum: float) -> None:
         for ps, pt in zip(student.parameters(), teacher.parameters()):
             pt.data.mul_(momentum).add_(ps.data, alpha=1 - momentum)
 
+
 def get_cosine_lr_schedule(initial_lr, final_lr, current_step, total_steps):
     """Calculate learning rate based on cosine decay schedule."""
     progress = current_step / total_steps
     cosine_decay = 0.5 * (1 + torch.cos(torch.tensor(progress * torch.pi)))
     return final_lr + (initial_lr - final_lr) * cosine_decay
+
 
 def main(
     csv_path: str,
@@ -119,15 +130,17 @@ def main(
     log_file: str | None = None,
     initial_lr: float = 0.00001,
     final_lr: float = 0.000001,
+    model_name: str = "facebook/dinov2-small",
 ) -> None:
     df = pd.read_csv(csv_path)
+    run_name = _run_name(model_name, len(df), "selfsup")
 
-    processor = AutoImageProcessor.from_pretrained("facebook/dinov2-small", use_fast=True)
+    processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
     # student_backbone = AutoModel.from_pretrained("facebook/dinov2-small")
     # teacher_backbone = AutoModel.from_pretrained("facebook/dinov2-small")
-    
+
     # Initialize student and teacher backbones with random weights
-    config = AutoConfig.from_pretrained("facebook/dinov2-small")
+    config = AutoConfig.from_pretrained(model_name)
     student_backbone = AutoModel.from_config(config)
     teacher_backbone = AutoModel.from_config(config)
 
@@ -184,10 +197,9 @@ def main(
 
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, drop_last=True)
 
-    wandb.init(project=project)
-    run_dir = output_dir or "runs"
-    run_dir = os.path.join(run_dir, f"run-{wandb.run.id}")
+    run_dir = os.path.join(output_dir or "runs", run_name)
     os.makedirs(run_dir, exist_ok=True)
+    wandb.init(project=project, name=run_name)
     log_file = log_file or os.path.join(run_dir, "loss.log")
 
     # Calculate total steps for the cosine schedule
@@ -201,15 +213,10 @@ def main(
         for img_s, img_t in loader:
             # Update learning rate according to schedule
             current_step += 1
-            current_lr = get_cosine_lr_schedule(
-                initial_lr, 
-                final_lr,
-                current_step,
-                total_steps
-            )
+            current_lr = get_cosine_lr_schedule(initial_lr, final_lr, current_step, total_steps)
             for param_group in optimizer.param_groups:
-                param_group['lr'] = current_lr
-            
+                param_group["lr"] = current_lr
+
             img_s = img_s.to(device)
             img_t = img_t.to(device)
 
@@ -254,6 +261,7 @@ if __name__ == "__main__":
     parser.add_argument("--log-file", type=str, default=None, help="File to log epoch losses")
     parser.add_argument("--initial-lr", type=float, default=0.00001, help="Initial learning rate")
     parser.add_argument("--final-lr", type=float, default=0.000001, help="Final learning rate")
+    parser.add_argument("--model-name", type=str, default="facebook/dinov2-small", help="DINOv2 model name")
     args = parser.parse_args()
 
     main(
@@ -267,4 +275,5 @@ if __name__ == "__main__":
         log_file=args.log_file,
         initial_lr=args.initial_lr,
         final_lr=args.final_lr,
+        model_name=args.model_name,
     )
