@@ -94,6 +94,58 @@ def evaluate(sim_matrix: np.ndarray, query_labels: np.ndarray, db_labels: np.nda
         "CMC": cmc.tolist(),
     }
 
+def evaluate_stream(
+    query_features: np.ndarray,
+    query_labels: np.ndarray,
+    db_features: np.ndarray,
+    db_labels: np.ndarray,
+    *,
+    max_rank: int = 5,
+):
+    """Compute metrics without allocating a full similarity matrix."""
+
+    db_norm = db_features / np.linalg.norm(db_features, axis=1, keepdims=True)
+    query_norm = query_features / np.linalg.norm(query_features, axis=1, keepdims=True)
+
+    rank1_c, rank5_c, aps_c = [], [], []
+    rank1_e, rank5_e, aps_e = [], [], []
+    cmc_cos = np.zeros(max_rank, dtype=float)
+    cmc_euc = np.zeros(max_rank, dtype=float)
+
+    for q_feat, q_norm_feat, q_label in zip(query_features, query_norm, query_labels):
+        sims_cos = np.dot(db_norm, q_norm_feat)
+        idx_cos = np.argsort(sims_cos)[::-1]
+        ranked_cos = db_labels[idx_cos]
+
+        rank1_c.append(ranked_cos[0] == q_label)
+        rank5_c.append(q_label in ranked_cos[:5])
+        aps_c.append(average_precision(ranked_cos, q_label))
+        cmc_cos += cmc_curve(ranked_cos, q_label, max_rank=max_rank)
+
+        dist_euc = np.linalg.norm(db_features - q_feat, axis=1)
+        idx_euc = np.argsort(dist_euc)
+        ranked_euc = db_labels[idx_euc]
+
+        rank1_e.append(ranked_euc[0] == q_label)
+        rank5_e.append(q_label in ranked_euc[:5])
+        aps_e.append(average_precision(ranked_euc, q_label))
+        cmc_euc += cmc_curve(ranked_euc, q_label, max_rank=max_rank)
+
+    n = len(query_features)
+    metrics_cos = {
+        "rank1": float(np.mean(rank1_c)),
+        "rank5": float(np.mean(rank5_c)),
+        "mAP": float(np.mean(aps_c)),
+        "CMC": (cmc_cos / n).tolist(),
+    }
+    metrics_euc = {
+        "rank1": float(np.mean(rank1_e)),
+        "rank5": float(np.mean(rank5_e)),
+        "mAP": float(np.mean(aps_e)),
+        "CMC": (cmc_euc / n).tolist(),
+    }
+
+    return metrics_cos, metrics_euc
 
 def main(args: argparse.Namespace) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -110,15 +162,22 @@ def main(args: argparse.Namespace) -> None:
         db_features = extractor(db_ds)
         query_features = extractor(query_ds)
 
-    cos = CosineSimilarity()
-    sim_cos = cos(query_features, db_features)
-    dist_euc = np.linalg.norm(
-        query_features.features[:, None, :] - db_features.features[None, :, :], axis=2
+    # cos = CosineSimilarity()
+    # sim_cos = cos(query_features, db_features)
+    # dist_euc = np.linalg.norm(
+    #     query_features.features[:, None, :] - db_features.features[None, :, :], axis=2
+    # )
+
+    # metrics_cos = evaluate(sim_cos, query_ds.labels_string, db_ds.labels_string, max_rank=5, distance=False)
+    # metrics_euc = evaluate(dist_euc, query_ds.labels_string, db_ds.labels_string, max_rank=5, distance=True)
+    
+    metrics_cos, metrics_euc = evaluate_stream(
+        query_features.features,
+        query_ds.labels_string,
+        db_features.features,
+        db_ds.labels_string,
+        max_rank=5,
     )
-
-    metrics_cos = evaluate(sim_cos, query_ds.labels_string, db_ds.labels_string, max_rank=5, distance=False)
-    metrics_euc = evaluate(dist_euc, query_ds.labels_string, db_ds.labels_string, max_rank=5, distance=True)
-
     # Use the directory of save_path for output if save_path is provided
     output_path = args.output
     if args.save_path:
