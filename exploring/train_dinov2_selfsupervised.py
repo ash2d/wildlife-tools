@@ -48,6 +48,8 @@ class SelfSupervisedDataset(ImageDataset):
         img_s = self.transform_student(img)
         img_t = self.transform_teacher(img)
         return img_s, img_t
+    
+
 
 
 class DINOHead(nn.Module):
@@ -134,68 +136,119 @@ def main(
 ) -> None:
     df = pd.read_csv(csv_path)
     run_name = _run_name(model_name, len(df), "selfsup")
+    # ------------------------------------------------------------------
+    #   STUDENT & TEACHER BACKBONES – initialise from pretrained
+    # ------------------------------------------------------------------
 
     processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
-    # student_backbone = AutoModel.from_pretrained("facebook/dinov2-small")
-    # teacher_backbone = AutoModel.from_pretrained("facebook/dinov2-small")
+    student_backbone = AutoModel.from_pretrained("facebook/dinov2-small")
+    teacher_backbone = AutoModel.from_pretrained("facebook/dinov2-small")
 
-    # Initialize student and teacher backbones with random weights
-    config = AutoConfig.from_pretrained(model_name)
-    student_backbone = AutoModel.from_config(config)
-    teacher_backbone = AutoModel.from_config(config)
-
+    # # Initialize student and teacher backbones with random weights
+    # config = AutoConfig.from_pretrained(model_name)
+    # student_backbone = AutoModel.from_config(config)
+    # teacher_backbone = AutoModel.from_config(config)
+    teacher_backbone.eval()                                   # freeze BN/Dropout
     for p in teacher_backbone.parameters():
         p.requires_grad = False
 
-    out_dim = 65536
+    out_dim = 2048
     student_head = DINOHead(student_backbone.config.hidden_size, out_dim)
     teacher_head = DINOHead(teacher_backbone.config.hidden_size, out_dim)
-
-    for p_s, p_t in zip(student_head.parameters(), teacher_head.parameters()):
+    for p_s, p_t in zip(student_head.parameters(),
+                        teacher_head.parameters()):
         p_t.data.copy_(p_s.data)
         p_t.requires_grad = False
 
     student = DINOv2Wrapper(student_backbone, student_head)
     teacher = DINOv2Wrapper(teacher_backbone, teacher_head)
 
+
     criterion = DINOLoss(out_dim)
 
     params: Iterable[torch.nn.Parameter] = itertools.chain(student.parameters())
-    optimizer = SGD(params=params, lr=initial_lr, momentum=0.9)
+    #  ---- AdamW: backbone lr = 2e-4 , head lr = 2e-3  ----
+
+    base_lr = 2e-4
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": [p for n, p in student.named_parameters()
+                        if "head" not in n], "lr": base_lr},
+            {"params": student_head.parameters(), "lr": base_lr * 10},
+        ],
+        betas=(0.9, 0.999),
+        weight_decay=0.04,
+    )
+    # optimizer = SGD(params=params, lr=initial_lr, momentum=0.9)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     student.to(device)
     teacher.to(device)
     criterion.to(device)
 
-    transform_student = T.Compose(
-        [
-            T.RandomResizedCrop(224, scale=(0.4, 1.0)),
-            T.RandomHorizontalFlip(),
-            T.ColorJitter(0.4, 0.4, 0.2, 0.1),
-            T.RandomGrayscale(p=0.2),
-            T.ToTensor(),
-            T.Normalize(mean=processor.image_mean, std=processor.image_std),
-        ]
-    )
+    mean, std = processor.image_mean, processor.image_std
 
-    transform_teacher = T.Compose(
-        [
-            T.Resize(256),
-            T.CenterCrop(224),
-            T.ToTensor(),
-            T.Normalize(mean=processor.image_mean, std=processor.image_std),
-        ]
-    )
+    global_crop = T.Compose([
+        T.RandomResizedCrop(224, scale=(0.25, 1.0)),
+        T.RandomHorizontalFlip(),
+        T.ColorJitter(0.4, 0.4, 0.2, 0.1),
+        T.RandomGrayscale(p=0.2),
+        T.ToTensor(), T.Normalize(mean, std),
+    ])
 
-    dataset = SelfSupervisedDataset(
-        df,
-        root=root_dir,
-        transform_student=transform_student,
-        transform_teacher=transform_teacher,
-    )
+    local_crop = T.Compose([
+        T.RandomResizedCrop(96, scale=(0.05, 0.25)),
+        T.RandomHorizontalFlip(),
+        T.ColorJitter(0.4, 0.4, 0.2, 0.1),
+        T.RandomGrayscale(p=0.2),
+        T.ToTensor(), T.Normalize(mean, std),
+    ])
 
-    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, drop_last=True)
+    class MultiCropDataset(ImageDataset):
+        """Return 2 global + 6 local crops per image."""
+        def __init__(self, *args, **kw):
+            super().__init__(*args, transform=None, load_label=False, **kw)
+
+        def __getitem__(self, idx):
+            data = self.metadata.iloc[idx]
+            img_path = os.path.join(self.root, data[self.col_path]) if self.root else data[self.col_path]
+            img = self.get_image(img_path)
+            crops = [global_crop(img) for _ in range(2)]
+            crops += [local_crop(img) for _ in range(6)]
+            return crops
+    # transform_student = T.Compose(
+    #     [
+    #         T.RandomResizedCrop(224, scale=(0.4, 1.0)),
+    #         T.RandomHorizontalFlip(),
+    #         T.ColorJitter(0.4, 0.4, 0.2, 0.1),
+    #         T.RandomGrayscale(p=0.2),
+    #         T.ToTensor(),
+    #         T.Normalize(mean=processor.image_mean, std=processor.image_std),
+    #     ]
+    # )
+
+    # transform_teacher = T.Compose(
+    #     [
+    #         T.Resize(256),
+    #         T.CenterCrop(224),
+    #         T.ToTensor(),
+    #         T.Normalize(mean=processor.image_mean, std=processor.image_std),
+    #     ]
+    # )
+
+    # dataset = SelfSupervisedDataset(
+    #     df,
+    #     root=root_dir,
+    #     transform_student=transform_student,
+    #     transform_teacher=transform_teacher,
+    # )
+    dataset = MultiCropDataset(df, root=root_dir)
+    def multi_crop_collate(batch):
+        # batch: list length B, each item is a list of 8 tensors
+        transposed = list(zip(*batch))           # len 8, each is tuple len B
+        return [torch.stack(v, 0) for v in transposed]   # list of 8 tensors [B,C,H,W]
+    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4,
+                                         drop_last=True,collate_fn=multi_crop_collate)
 
     run_dir = os.path.join(output_dir or "runs", run_name)
     os.makedirs(run_dir, exist_ok=True)
@@ -205,35 +258,55 @@ def main(
     # Calculate total steps for the cosine schedule
     total_steps = epochs * len(loader)
     current_step = 0
+    def teacher_temperature(step, warmup=3000, t0=0.04, t1=0.07):
+        if step > warmup: return t1
+        return t0 + (t1 - t0) * step / warmup
+
+    def ema_momentum(step, base_m=0.996, total=total_steps):
+        # cosine ramp from 0.9 → 0.996
+        return 0.9 + (base_m - 0.9) * (1 + torch.cos(
+            torch.tensor(step / total * torch.pi))) / 2
 
     set_seed(0)
     for epoch in range(epochs):
         student.train()
-        losses = []
-        for img_s, img_t in loader:
-            # Update learning rate according to schedule
+        for crops in loader:          # crops is length-8 list
             current_step += 1
-            current_lr = get_cosine_lr_schedule(initial_lr, final_lr, current_step, total_steps)
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = current_lr
 
-            img_s = img_s.to(device)
-            img_t = img_t.to(device)
+            # -------- learning-rate cosine schedule ----------
+            lr = get_cosine_lr_schedule(base_lr, base_lr * 0.01,
+                                        current_step, total_steps)
+            for g in optimizer.param_groups:
+                g["lr"] = lr * (10 if g is optimizer.param_groups[1] else 1)
 
-            s_out = student(img_s)
+            # -------- push all views to GPU ------------------
+            crops = [c.to(device, non_blocking=True) for c in crops]
+            student_out = [student(v) for v in crops]                # 8 tensors
             with torch.no_grad():
-                t_out = teacher(img_t)
-            loss = criterion(s_out, t_out)
+                teacher_out = [teacher(v) for v in crops[:2]]        # 2 globals
+
+            # -------- DINOLoss over views --------------------
+            temp = teacher_temperature(current_step)
+            criterion.teacher_temp = temp                            # update T
+            loss = 0.
+            for so in student_out:
+                for to in teacher_out:
+                    loss += criterion(so, to)
+            loss /= (len(student_out) * len(teacher_out))
 
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
             optimizer.step()
-            update_ema(student, teacher, ema)
 
-            losses.append(loss.item())
-        epoch_loss = sum(losses) / len(losses)
-        print(f"Epoch {epoch}: loss={epoch_loss:.4f}, lr={current_lr:.6f}")
-        wandb.log({"loss": epoch_loss, "epoch": epoch, "learning_rate": current_lr})
+            # -------- EMA update -----------------------------
+            m = ema_momentum(current_step)
+            update_ema(student, teacher, m)
+
+        print(f"Epoch {epoch}: loss={loss.item():.4f}, lr={lr:.6f}")
+        epoch_loss = loss.item()
+        # print(f"Epoch {epoch}: loss={epoch_loss:.4f}, lr={current_lr:.6f}")
+        wandb.log({"loss": epoch_loss, "epoch": epoch})
         # Create log file if it doesn't exist
         if not os.path.exists(os.path.dirname(log_file)):
             os.makedirs(os.path.dirname(log_file), exist_ok=True)
